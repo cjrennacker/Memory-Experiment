@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Print Memory Scan Task</title>
+<style>
+  :root { color-scheme: light; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; background: #ffffff; color: #000000;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  body { display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  #app { width: 800px; height: 600px; position: relative; background: #fff; }
+  .center-item {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    text-align: center;
+  }
+  .text-block { max-width: 600px; width: 600px; line-height: 1.5; font-size: 17px; }
+  .text-block h2 { margin-top: 0; }
+  .text-block ul { text-align: left; }
+  .small { font-size: 13px; color: #666; }
+  button {
+    font-size: 16px; padding: 9px 22px; cursor: pointer; border: 1px solid #333;
+    background: #111; color: #fff; border-radius: 6px;
+  }
+  button:hover { background: #333; }
+  input[type="text"] { font-size: 16px; padding: 7px; border: 1px solid #999; border-radius: 4px; width: 220px; }
+  #progress {
+    position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+    font-size: 12px; color: #999; font-family: monospace;
+  }
+  .fixdot { width: 12px; height: 12px; border-radius: 50%; background: #000; }
+  .cue-title { font-size: 40px; font-weight: 700; letter-spacing: 0.01em; }
+  .cue-sub { font-size: 14px; color: #777; margin-bottom: 14px; }
+  .resp { font-size: 22px; line-height: 1.7; }
+  .resp .keys { font-size: 18px; color: #333; }
+  .fb-ok { color: #1a7f37; font-size: 26px; font-weight: 600; }
+  .fb-bad { color: #b42318; font-size: 26px; font-weight: 600; }
+  .mask { display: block; width: 800px; height: 600px; }
+
+  /* ---- consent screen ---- */
+  .consent-wrap { width: 720px; }
+  .consent-wrap h2 { margin: 0 0 6px; font-size: 22px; }
+  .consent-box { text-align: left; height: 372px; overflow-y: auto; border: 1px solid #bbb; border-radius: 6px; padding: 8px 18px; font-size: 13.5px; line-height: 1.45; background: #fafafa; }
+  .consent-box h3 { font-size: 14px; margin: 12px 0 3px; }
+  .consent-box p { margin: 0 0 6px; }
+  .consent-box ul { margin: 0 0 6px; padding-left: 20px; }
+  .btn-row { margin-top: 12px; display: flex; gap: 16px; justify-content: center; }
+  button.secondary { background: #fff; color: #111; }
+  button.secondary:hover { background: #eee; }
+
+  /* ---- gallery (memory set) and probe ---- */
+  .page { position: absolute; inset: 0; background: #fff; border: 1px solid #ddd; box-sizing: border-box; }
+  .hdr { height: 34px; background: #2f3a2c; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; }
+  .hdr .logo { width: 90px; height: 8px; background: #c9d1c4; border-radius: 2px; }
+  .hdr .nav { width: 150px; height: 6px; background: #8a9885; border-radius: 2px; }
+  .arr { position: absolute; left: 0; right: 0; top: 34px; bottom: 0; display: flex; align-items: center; justify-content: center; }
+  .arr .grid { display: grid; gap: 14px; }
+  .pic { width: 200px; height: 200px; display: block; background: #fff; }
+  .pic.missing { background: #d9ddd6; }
+  .center-item .pic { margin: 0 auto; }
+  .probe-q { font-size: 20px; margin-top: 16px; }
+  .probe-keys { font-size: 16px; color: #333; margin-top: 6px; line-height: 1.6; }
+</style>
+<script src="images/stats.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<div id="progress"></div>
+
+<script>
+/* =========================================================================
+   PRINT MEMORY SCAN TASK  (Sternberg memory scanning, "Sv" version)
+   On each trial the participant studies a small gallery of landscape prints
+   (the memory set, 2, 4 or 6 images), then sees a single probe print and says
+   whether it was in the gallery (old) or not (new).
+
+   Design (all within subjects):
+     set size (2, 4, 6)  x  probe color treatment (warm, cool, black and white)  x  probe status (old, new)
+   Mixed sets hold equal numbers of warm and cool images (probe is warm or cool).
+   Neutral sets are all black and white. Every photo is converted to black and white
+   and then, depending on its treatment, given a "Screen" color layer: warm #ff0000,
+   cool #001eff (see tools/make_treatments.py). Which photos get which treatment is
+   randomized for each participant, so no photo is tied to a color.
+
+   Measures: hits and false alarms (d', c) by probe treatment, and reaction time as a
+   function of set size (slope = scanning rate, intercept = everything else).
+   ========================================================================= */
+
+const CONFIG = {
+  studyVersion: '2.0',
+
+  // ---- trial counts ----
+  setSizes: [2, 4, 6],           // memory set sizes (images). Keep them even so mixed sets split warm/cool equally
+  practiceTrials: 12,            // sampled from the balanced trial list, with feedback
+  experimentalBlocks: 3,
+  trialsPerCellPerBlock: 2,      // 18 cells x 2 = 36 trials per block -> 108 total (6 per cell)
+  discardFirstPerBlock: 2,       // first trials of each block are logged but excluded from the summary
+
+  // ---- timing (ms) ----
+  studyMsPerItem: 1000,          // gallery time = this x set size (2 s, 4 s, 6 s). Override with ?T=1500
+  fixationMs: 500,               // get-ready dot before the gallery
+  retentionMs: 1000,             // blank delay between gallery and probe
+  responseTimeoutMs: 4000,
+  itiMs: 500,
+  practiceFeedbackMs: 800,
+
+  // ---- images ----
+  photoCount: 44,                // images/print_01 ... print_44, each in _warm, _cool and _bw versions
+  treatmentCounts: { warm: 15, cool: 15, bw: 14 },   // must add up to photoCount
+
+  // ---- data logging ----
+  // Paste your own Apps Script Web App URL here (ends in /exec). See SHEETS_SETUP.md.
+  // Leave blank to skip live logging and rely on the CSV download at the end.
+  sheetWebAppUrl: 'https://script.google.com/macros/s/AKfycby0TsmNQkBbMiSWXHyMPQW81uczHLCTMVGKcC27QxUR7t2zDUC0nHlqOwGht5zIervJJA/exec',
+
+  showParticipantSummary: true,  // show d' and speed on the final screen
+
+  // ---- IRB consent text ----
+  consent: {
+    version: 'ASU-short-consent-template-v1.1',
+    researcherName: 'Cameron J Rennacker',
+    advisorName: 'Dr. Scotty Craig or Dr. Vaughn Becker',
+    department: 'Human Systems Engineering',
+    school: 'Arizona State University',
+    duration: 'about 15 minutes',
+    compensation: 'There is no compensation for participating.',
+    contactEmail: 'cameron.rennacker@asu.edu',
+    irbPhone: '(480) 965-6788',
+    includeDataSharing: true,
+  },
+};
+
+// URL overrides for piloting and testing, e.g. index.html?T=1500  or  ?quick=1
+(function applyUrlOverrides() {
+  const q = new URLSearchParams(location.search);
+  if (q.get('T')) CONFIG.studyMsPerItem = Math.max(50, parseInt(q.get('T'), 10) || CONFIG.studyMsPerItem);
+  if (q.get('sheet')) CONFIG.sheetWebAppUrl = q.get('sheet');
+  if (q.get('quick') === '1') {
+    CONFIG.practiceTrials = 4;
+    CONFIG.experimentalBlocks = 2;
+    CONFIG.trialsPerCellPerBlock = 1;
+    CONFIG.discardFirstPerBlock = 1;
+    CONFIG.studyMsPerItem = 120; CONFIG.fixationMs = 60; CONFIG.retentionMs = 60; CONFIG.itiMs = 30; CONFIG.practiceFeedbackMs = 60;
+    CONFIG.responseTimeoutMs = 1500;
+  }
+})();
+
+/* ---- state ---------------------------------------------------------------- */
+let sessionId = '';
+let trialCounter = 0;
+let keyMap = null;             // { old: 'z'|'m', new: 'm'|'z' }
+const allData = [];
+let audioCtx = null;
+let keyResolver = null;
+let consentRecord = null;      // { consent, consent_version, consent_timestamp }
+let treatOf = [];              // treatOf[id] = 'warm' | 'cool' | 'bw'  (random for each participant)
+let pools = { warm: [], cool: [], bw: [] };
+let loaded = [];               // loaded[id] = true when the treated image loaded
+let prevSetIds = [];
+
+const app = document.getElementById('app');
+const progressEl = document.getElementById('progress');
+function render(html) { app.innerHTML = html; }
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+function raf() { return new Promise((r) => requestAnimationFrame(r)); }
+function updateProgress(t) { progressEl.textContent = t; }
+
+/* ---- input ---------------------------------------------------------------- */
+document.addEventListener('keydown', (e) => {
+  if (!keyResolver) return;
+  const key = e.key.toLowerCase();
+  if (keyResolver.keys === '*' || keyResolver.keys.includes(key)) {
+    const rt = performance.now() - keyResolver.startTime;
+    const resolve = keyResolver.resolve;
+    keyResolver = null;
+    resolve({ key, rt, timedOut: false });
+  }
+});
+function waitForResponse(keys, timeoutMs, startTime = performance.now()) {
+  return new Promise((resolve) => {
+    const timeoutId = setTimeout(() => {
+      if (keyResolver) { keyResolver = null; resolve({ key: null, rt: timeoutMs, timedOut: true }); }
+    }, timeoutMs);
+    keyResolver = { keys, startTime, resolve: (r) => { clearTimeout(timeoutId); resolve(r); } };
+  });
+}
+function waitForAnyKey() { return waitForResponse('*', 1e9).then(() => {}); }
+
+/* ---- logging to Google Sheets (fire and forget) ------------------------------
+   `no-cors` keeps the browser from blocking on a preflight, so logging never
+   adds latency to the trial loop. The local `allData` array and CSV are the
+   source of truth; the sheet is a live mirror. */
+function sendToSheet(row) {
+  if (!CONFIG.sheetWebAppUrl) return;
+  try {
+    fetch(CONFIG.sheetWebAppUrl, { method: 'POST', mode: 'no-cors', body: JSON.stringify(row) }).catch(() => {});
+  } catch (e) { /* CSV backup still has the data */ }
+}
+
+/* ---- audio ---------------------------------------------------------------- */
+function initAudio() {
+  if (!audioCtx) { const Ctx = window.AudioContext || window.webkitAudioContext; if (Ctx) audioCtx = new Ctx(); }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+/* ---- random helpers ----------------------------------------------------------- */
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+function sample(arr, n) { return shuffle(arr).slice(0, n); }
+function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+/* ---- images and color treatments ----------------------------------------------- */
+const TCODE = { warm: 'w', cool: 'c', bw: 'b' };
+function imgSrc(id) { return `images/print_${pad2(id + 1)}_${treatOf[id]}.jpg`; }
+function itemKey(id) { return pad2(id + 1) + TCODE[treatOf[id]]; }
+function statOf(id, field) {
+  try { return IMAGE_STATS[pad2(id + 1)][treatOf[id]][field]; } catch (e) { return null; }
+}
+function mean(xs) { return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null; }
+
+// Randomly assign every photo to warm, cool, or black and white for this participant.
+function assignTreatments() {
+  const ids = shuffle([...Array(CONFIG.photoCount).keys()]);
+  const { warm, cool } = CONFIG.treatmentCounts;
+  treatOf = [];
+  ids.forEach((id, k) => { treatOf[id] = k < warm ? 'warm' : k < warm + cool ? 'cool' : 'bw'; });
+  pools = { warm: [], cool: [], bw: [] };
+  treatOf.forEach((t, id) => pools[t].push(id));
+}
+function preloadImages() {
+  return Promise.all(Array.from({ length: CONFIG.photoCount }, (_, id) => new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => { loaded[id] = true; resolve(); };
+    img.onerror = () => { loaded[id] = false; resolve(); };
+    img.src = imgSrc(id);
+  })));
+}
+function picHTML(id) {
+  return loaded[id] ? `<img class="pic" src="${imgSrc(id)}" alt="">` : `<div class="pic missing"></div>`;
+}
+
+/* ---- stimulus construction ------------------------------------------------------ */
+// Draw n images of one treatment, avoiding the previous trial's gallery when the pool allows.
+function draw(treat, n, exclude) {
+  let cands = pools[treat].filter((id) => !exclude.includes(id));
+  if (cands.length < n) cands = pools[treat];
+  return sample(cands, n);
+}
+
+// trial = { setType: 'mixed'|'neutral', setSize, probeTreat, status: 'old'|'new' }
+function buildStimuli(trial) {
+  const { setSize, probeTreat, status } = trial;
+  let setIds, probeId;
+  if (trial.setType === 'neutral') {
+    const picks = draw('bw', setSize + (status === 'new' ? 1 : 0), prevSetIds);
+    setIds = picks.slice(0, setSize);
+    probeId = status === 'new' ? picks[setSize] : sample(setIds, 1)[0];
+  } else {
+    const per = setSize / 2, other = probeTreat === 'warm' ? 'cool' : 'warm';
+    const same = draw(probeTreat, per + (status === 'new' ? 1 : 0), prevSetIds);
+    const oth = draw(other, per, prevSetIds);
+    const setSame = same.slice(0, per);
+    setIds = setSame.concat(oth);
+    probeId = status === 'new' ? same[per] : sample(setSame, 1)[0];
+  }
+  setIds = shuffle(setIds);
+  return { setIds, probeId, probePos: status === 'old' ? setIds.indexOf(probeId) : null };
+}
+
+function galleryHTML(setIds) {
+  const cols = setIds.length >= 6 ? 3 : 2;
+  return `<div class="page"><div class="hdr"><div class="logo"></div><div class="nav"></div></div>
+    <div class="arr"><div class="grid" style="grid-template-columns: repeat(${cols}, 200px)">${setIds.map(picHTML).join('')}</div></div></div>`;
+}
+function probeHTML(id) {
+  const k = (kk) => kk.toUpperCase();
+  return `<div class="center-item">
+    ${picHTML(id)}
+    <div class="probe-q">Was this print in the gallery?</div>
+    <div class="probe-keys"><strong>${k(keyMap.old)}</strong> = Yes, it was &nbsp;&nbsp; <strong>${k(keyMap.new)}</strong> = No, it was new</div>
+  </div>`;
+}
+
+/* ---- design: balanced trial lists ------------------------------------------------- */
+function cellList() {
+  const cells = [];
+  CONFIG.setSizes.forEach((setSize) => {
+    ['old', 'new'].forEach((status) => {
+      ['warm', 'cool'].forEach((probeTreat) => cells.push({ setType: 'mixed', setSize, probeTreat, status }));
+      cells.push({ setType: 'neutral', setSize, probeTreat: 'bw', status });
+    });
+  });
+  return cells;   // 3 sizes x 2 statuses x 3 probe treatments = 18 cells
+}
+function buildBlockTrials(perCell) {
+  const trials = [];
+  cellList().forEach((c) => { for (let i = 0; i < perCell; i++) trials.push({ ...c }); });
+  return shuffle(trials);
+}
+function buildPracticeTrials() { return sample(buildBlockTrials(1), CONFIG.practiceTrials); }
+
+/* ---- timing-aware presentation --------------------------------------------------- */
+async function showFor(html, ms) {
+  render(html);
+  const t0 = await raf();
+  let t = t0;
+  while (t - t0 < ms - 8) t = await raf();
+  return Math.round(t - t0);
+}
+
+/* ---- trial ------------------------------------------------------------------------- */
+async function runTrial(trial, meta) {
+  const st = buildStimuli(trial);
+  const studyMs = CONFIG.studyMsPerItem * trial.setSize;
+
+  render(`<div class="center-item"><div class="fixdot"></div></div>`);
+  await sleep(CONFIG.fixationMs);
+  const actualStudy = await showFor(galleryHTML(st.setIds), studyMs);
+  render(`<div class="center-item"><div class="fixdot"></div></div>`);
+  await sleep(CONFIG.retentionMs);
+
+  render(probeHTML(st.probeId));
+  const onset = await raf();
+  const result = await waitForResponse([keyMap.old, keyMap.new], CONFIG.responseTimeoutMs, onset);
+
+  let response = 'timeout', outcome = 'timeout', correct = 0;
+  if (!result.timedOut) {
+    response = result.key === keyMap.old ? 'old' : 'new';
+    correct = response === trial.status ? 1 : 0;
+    if (trial.status === 'old') outcome = response === 'old' ? 'hit' : 'miss';
+    else outcome = response === 'old' ? 'false_alarm' : 'correct_rejection';
+  }
+
+  const setW = st.setIds.filter((i) => treatOf[i] === 'warm').length;
+  const setC = st.setIds.filter((i) => treatOf[i] === 'cool').length;
+  const nz = (x) => (x === null || x === undefined ? 'NA' : Math.round(x * 1000) / 1000);
+  trialCounter += 1;
+  const row = {
+    record_type: 'trial',
+    study_version: CONFIG.studyVersion,
+    session_id: sessionId,
+    ...consentRecord,
+    trial_num: trialCounter,
+    phase: meta.phase,
+    block_num: meta.blockNum,
+    block_trial_num: meta.trialInBlock,
+    analysis_include: meta.phase === 'experimental' && meta.trialInBlock > CONFIG.discardFirstPerBlock ? 1 : 0,
+    set_size: trial.setSize,
+    set_type: trial.setType,
+    probe_status: trial.status,
+    probe_treatment: trial.probeTreat,
+    probe_item: itemKey(st.probeId),
+    probe_pos: st.probePos === null ? 'NA' : st.probePos,
+    set_items: st.setIds.map(itemKey).join('|'),
+    n_warm_in_set: setW, n_cool_in_set: setC, n_bw_in_set: st.setIds.length - setW - setC,
+    probe_warmth: nz(statOf(st.probeId, 'warmth')),
+    probe_luma: nz(statOf(st.probeId, 'luma')),
+    set_mean_warmth: nz(mean(st.setIds.map((i) => statOf(i, 'warmth')).filter((x) => x !== null))),
+    set_mean_luma: nz(mean(st.setIds.map((i) => statOf(i, 'luma')).filter((x) => x !== null))),
+    key_mapping: keyMap.old === 'z' ? 'z_old' : 'm_old',
+    response,
+    outcome,
+    correct,
+    response_time_ms: result.timedOut ? 'NA' : Math.round(result.rt),
+    study_ms_set: studyMs,
+    study_ms_actual: actualStudy,
+    retention_ms: CONFIG.retentionMs,
+    screen_w: screen.width, screen_h: screen.height, dpr: window.devicePixelRatio,
+    timestamp: new Date().toISOString(),
+  };
+  allData.push(row);
+  sendToSheet(row);
+  prevSetIds = st.setIds;
+
+  if (meta.phase === 'practice') {
+    render(`<div class="center-item ${correct ? 'fb-ok' : 'fb-bad'}">${result.timedOut ? 'Too slow' : correct ? 'Correct' : 'Incorrect'}</div>`);
+    await sleep(CONFIG.practiceFeedbackMs);
+  }
+  render('');
+  await sleep(CONFIG.itiMs);
+}
+
+async function runBlock(trials, meta, label) {
+  for (let i = 0; i < trials.length; i++) {
+    updateProgress(`${label} - trial ${i + 1}/${trials.length}`);
+    await runTrial(trials[i], { ...meta, trialInBlock: i + 1 });
+  }
+}
+
+/* ---- SDT and scanning-slope summary ----------------------------------------------- */
+// Inverse standard normal CDF (Acklam's algorithm).
+function qnorm(p) {
+  const a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02, 1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00];
+  const b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02, 6.680131188771972e+01, -1.328068155288572e+01];
+  const c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00, -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00];
+  const d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00, 3.754408661907416e+00];
+  const pl = 0.02425, ph = 1 - pl; let q, r;
+  if (p < pl) { q = Math.sqrt(-2 * Math.log(p)); return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1); }
+  if (p > ph) { q = Math.sqrt(-2 * Math.log(1 - p)); return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1); }
+  q = p - 0.5; r = q * q;
+  return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+}
+// Log-linear correction (Hautus, 1995): add 0.5 to counts, 1 to totals, so rates never hit 0 or 1.
+function sdt(hits, nOld, fas, nNew) {
+  const H = (hits + 0.5) / (nOld + 1), FA = (fas + 0.5) / (nNew + 1);
+  const zH = qnorm(H), zFA = qnorm(FA);
+  return { hit_rate: hits / nOld, fa_rate: fas / nNew, d_prime: zH - zFA, criterion_c: -(zH + zFA) / 2 };
+}
+// Least-squares line through (set size, mean RT) points. Needs at least two set sizes.
+function fitLine(points) {
+  if (points.length < 2) return { slope: null, intercept: null };
+  const n = points.length, mx = mean(points.map((p) => p[0])), my = mean(points.map((p) => p[1]));
+  const sxx = points.reduce((s, p) => s + (p[0] - mx) ** 2, 0);
+  if (!sxx) return { slope: null, intercept: null };
+  const slope = points.reduce((s, p) => s + (p[0] - mx) * (p[1] - my), 0) / sxx;
+  return { slope, intercept: my - slope * mx };
+}
+function rtBySize(rows) {   // correct trials only: [[setSize, meanRT], ...]
+  return CONFIG.setSizes.map((n) => {
+    const rts = rows.filter((r) => r.set_size === n && r.correct === 1).map((r) => r.response_time_ms);
+    return rts.length ? [n, mean(rts)] : null;
+  }).filter(Boolean);
+}
+function summarize(rows) {
+  const exp = rows.filter((r) => r.analysis_include === 1 && r.outcome !== 'timeout');
+  const out = {};
+  ['warm', 'cool', 'bw', 'all'].forEach((g) => {
+    const set = g === 'all' ? exp : exp.filter((r) => r.probe_treatment === g);
+    const old = set.filter((r) => r.probe_status === 'old'), nw = set.filter((r) => r.probe_status === 'new');
+    const hits = old.filter((r) => r.outcome === 'hit').length;
+    const fas = nw.filter((r) => r.outcome === 'false_alarm').length;
+    const o = { n_old: old.length, n_new: nw.length, hits, false_alarms: fas,
+      ...(old.length && nw.length ? sdt(hits, old.length, fas, nw.length) : {}) };
+    const correctRts = set.filter((r) => r.correct === 1).map((r) => r.response_time_ms);
+    o.mean_rt_correct = mean(correctRts);
+    [['old', old], ['new', nw], ['all', set]].forEach(([lab, rs]) => {
+      const f = fitLine(rtBySize(rs));
+      o[`slope_${lab}`] = f.slope; o[`intercept_${lab}`] = f.intercept;
+    });
+    out[g] = o;
+  });
+  return out;
+}
+function round(x, k = 3) { return typeof x === 'number' ? Math.round(x * 10 ** k) / 10 ** k : x; }
+function summaryRow() {
+  const s = summarize(allData);
+  const exp = allData.filter((r) => r.phase === 'experimental');
+  const row = {
+    record_type: 'summary', study_version: CONFIG.studyVersion, session_id: sessionId, ...consentRecord,
+    key_mapping: keyMap.old === 'z' ? 'z_old' : 'm_old',
+    study_ms_per_item: CONFIG.studyMsPerItem,
+    n_trials_logged: exp.length,
+    n_trials_analyzed: exp.filter((r) => r.analysis_include === 1 && r.outcome !== 'timeout').length,
+    n_timeouts: exp.filter((r) => r.outcome === 'timeout').length,
+    treatment_map: treatOf.map((t, id) => itemKey(id)).join(','),
+    timestamp: new Date().toISOString(),
+  };
+  ['warm', 'cool', 'bw', 'all'].forEach((g) => {
+    Object.entries(s[g]).forEach(([k, v]) => { row[`${g}_${k}`] = round(v); });
+  });
+  // mean correct RT in every cell, for plotting RT by set size
+  ['warm', 'cool', 'bw'].forEach((g) => ['old', 'new'].forEach((st) => CONFIG.setSizes.forEach((n) => {
+    const rts = allData.filter((r) => r.analysis_include === 1 && r.correct === 1 && r.probe_treatment === g && r.probe_status === st && r.set_size === n)
+      .map((r) => r.response_time_ms);
+    row[`rt_${g}_${st}_n${n}`] = rts.length ? round(mean(rts), 1) : 'NA';
+  })));
+  return row;
+}
+
+/* ---- screens ------------------------------------------------------------------------- */
+function ph(v) { return escapeHtml(v); }
+function totalTrials() { return CONFIG.experimentalBlocks * cellList().length * CONFIG.trialsPerCellPerBlock; }
+function consentHTML() {
+  const c = CONFIG.consent;
+  const sizes = CONFIG.setSizes.join(', ').replace(/, (\d+)$/, ', or $1');
+  const sharing = c.includeDataSharing ? `
+      <p>De-identified data from this study may be shared with the research community at large to advance science. We will remove or code any personal information that could identify you before files are shared with other researchers, so that, by current scientific standards and known methods, no one will be able to identify you from the information we share.</p>` : '';
+  return `
+    <div class="center-item consent-wrap">
+      <h2>Research Study Consent</h2>
+      <div class="consent-box" id="consent-box" tabindex="0">
+        <h3>Title of study</h3>
+        <p>Memory Search for Landscape Photographs</p>
+        <h3>Who is running this study?</h3>
+        <p>I am a graduate student in ${ph(c.department)} at ${ph(c.school)}, working with ${ph(c.advisorName)}. I am conducting this research study as part of my graduate work. My name is ${ph(c.researcherName)}.</p>
+        <h3>Why am I being asked?</h3>
+        <p>You are invited to take part in a research study about how people hold and search pictures in short-term memory. You must be at least 18 years old to take part. Taking part is your choice.</p>
+        <h3>What will I be doing?</h3>
+        <p>You will do a computer task that takes ${ph(c.duration)}. On each trial you will study a small gallery of landscape photographs (${sizes} photos) for a few seconds. The gallery will disappear, then you will see one photograph and press a key to say whether it was in the gallery. Some photographs are shown in black and white and some with a red or blue tint. There is a short practice (${CONFIG.practiceTrials} trials), then ${totalTrials()} trials in ${CONFIG.experimentalBlocks} blocks with breaks between them.</p>
+        <h3>What are the risks and benefits?</h3>
+        <p>There are no known risks beyond those of everyday computer use, such as mild eye or mental fatigue. You may take a break between blocks. There are no direct benefits to you. The results may help designers make online galleries and shops easier to search.</p>
+        <h3>Compensation</h3>
+        <p>${ph(c.compensation)}</p>
+        <h3>How will my information be protected?</h3>
+        <p>Your responses are anonymous. We record your key presses, response times, and screen size. We do not ask for your name or email address. If you type a participant ID, please do not use your name. Results will be reported as group summaries only. The task is not audio or video recorded.</p>${sharing}
+        <h3>Do I have to take part?</h3>
+        <p>No. Taking part is voluntary. You may skip any part of the task or stop at any time by closing this window, with no penalty. If you stop, the trials you already finished may stay in the data set, and because responses are anonymous they cannot be removed later.</p>
+        <h3>Who can I talk to about this study?</h3>
+        <p>If you have questions about the study, contact ${ph(c.researcherName)} at ${ph(c.contactEmail)}.</p>
+        <p>If you have questions about your rights as a participant, or you feel you have been placed at risk, you can contact the Chair of the Human Subjects Institutional Review Board through the ASU Office of Research Integrity and Assurance at ${ph(c.irbPhone)}.</p>
+        <h3>Your consent</h3>
+        <p>Clicking <strong>"I consent"</strong> below means you are 18 or older, you have read this information, and you agree to be part of the study. Clicking <strong>"I do not consent"</strong> will end the session and no data will be collected.</p>
+        <p>You can print or save this page for your records.</p>
+      </div>
+      <div class="btn-row">
+        <button id="consent-yes">I consent</button>
+        <button id="consent-no" class="secondary">I do not consent</button>
+      </div>
+    </div>`;
+}
+function declinedHTML() {
+  return `
+    <div class="center-item text-block">
+      <h2>Thank you</h2>
+      <p>You chose not to take part, and that is completely fine. No data were collected. You can close this window.</p>
+    </div>`;
+}
+function getConsent() {
+  return new Promise((resolve) => {
+    render(consentHTML());
+    document.getElementById('consent-yes').addEventListener('click', () => {
+      initAudio();
+      consentRecord = { consent: 'yes', consent_version: CONFIG.consent.version, consent_timestamp: new Date().toISOString() };
+      resolve(true);
+    });
+    document.getElementById('consent-no').addEventListener('click', () => resolve(false));
+  });
+}
+function getSessionId() {
+  return new Promise((resolve) => {
+    render(`
+      <div class="center-item text-block">
+        <h2>Print Memory Task</h2>
+        <p>Thank you for agreeing to take part.</p>
+        <p>Enter a participant ID, or leave it blank for an auto-generated one. Please do not use your name.</p>
+        <input type="text" id="pid-input" autofocus>
+        <br><br>
+        <button id="start-btn">Continue</button>
+        <p class="small">Use a laptop or desktop computer with a keyboard, and set your screen to normal brightness.</p>
+      </div>`);
+    document.getElementById('start-btn').addEventListener('click', () => {
+      const val = document.getElementById('pid-input').value.trim();
+      resolve(val || ('P' + Date.now()));
+    });
+  });
+}
+function instructionsHTML() {
+  return `
+    <div class="center-item text-block">
+      <h2>Instructions</h2>
+      <p>Imagine you are browsing an online print gallery and trying to remember what you saw. On each trial a small gallery of landscape photos will appear for a few seconds. <strong>Study them.</strong> The number of photos changes from trial to trial.</p>
+      <p>The gallery will disappear. After a short pause, <strong>one photo</strong> will appear. Decide whether it was in the gallery you just saw. Some photos are black and white, and some are tinted red or blue. Treat the tint as part of the picture.</p>
+      <ul>
+        <li>Press <strong>${keyMap.old.toUpperCase()}</strong> if the photo <strong>was</strong> in the gallery.</li>
+        <li>Press <strong>${keyMap.new.toUpperCase()}</strong> if it was <strong>not</strong>.</li>
+      </ul>
+      <p>Half of the time it was. Answer as quickly as you can without making mistakes. You will get feedback during a short practice, but not afterward.</p>
+      <p>Press any key to begin practice.</p>
+    </div>`;
+}
+function endOfPracticeHTML(acc) {
+  return `
+    <div class="center-item text-block">
+      <h2>Practice complete</h2>
+      <p>Practice accuracy: ${acc}%.</p>
+      <p>The real trials come next, with no trial-by-trial feedback. Remember:</p>
+      <ul>
+        <li><strong>${keyMap.old.toUpperCase()}</strong> = the photo was in the gallery</li>
+        <li><strong>${keyMap.new.toUpperCase()}</strong> = it was not</li>
+      </ul>
+      <p>Press any key to begin.</p>
+    </div>`;
+}
+function breakHTML(done, total, blockRows) {
+  const ok = blockRows.filter((r) => r.outcome !== 'timeout');
+  const acc = ok.length ? Math.round(100 * ok.filter((r) => r.correct === 1).length / ok.length) : 0;
+  const rt = mean(ok.filter((r) => r.correct === 1).map((r) => r.response_time_ms));
+  return `
+    <div class="center-item text-block">
+      <h2>Take a short break</h2>
+      <p>You have finished ${done} of ${total} blocks.</p>
+      <p>That block: <strong>${acc}%</strong> correct${rt ? `, average speed <strong>${Math.round(rt)} ms</strong>` : ''}. Try to go a bit faster without making more mistakes.</p>
+      <p>Press any key when you are ready to continue.</p>
+    </div>`;
+}
+function experimentCompleteHTML() {
+  return `
+    <div class="center-item text-block">
+      <h2>All trials complete</h2>
+      <p>Thank you for participating!</p>
+      <p>Press any key to finish.</p>
+    </div>`;
+}
+function toCSV(rows) {
+  if (!rows.length) return '';
+  const headers = Array.from(rows.reduce((s, r) => { Object.keys(r).forEach((k) => s.add(k)); return s; }, new Set()));
+  const lines = [headers.join(',')];
+  rows.forEach((r) => lines.push(headers.map((h) => `"${String(r[h] ?? '').replace(/"/g, '""')}"`).join(',')));
+  return lines.join('\n');
+}
+function endOfExperimentHTML() {
+  const csvRows = allData.concat([summaryRow()]);
+  const blob = new Blob([toCSV(csvRows)], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const s = summarize(allData);
+  const fmt = (x) => (typeof x === 'number' ? x.toFixed(2) : 'n/a');
+  const sum = CONFIG.showParticipantSummary ? `
+    <p class="small">Your results: sensitivity (d') was ${fmt(s.warm.d_prime)} for warm photos, ${fmt(s.cool.d_prime)} for cool photos, and ${fmt(s.bw.d_prime)} for black and white.
+    ${typeof s.all.slope_all === 'number' ? `Each extra photo in the gallery added about ${Math.round(s.all.slope_all)} ms to your answer time.` : ''}</p>` : '';
+  const syncNote = CONFIG.sheetWebAppUrl
+    ? `<p class="small">Your trials were also sent to the study's Google Sheet as you went. The download below is your personal backup copy.</p>` : '';
+  return `
+    <div class="center-item text-block">
+      <h2>All done, thank you!</h2>
+      <p>${allData.length} trials logged for session <strong>${escapeHtml(sessionId)}</strong>.</p>
+      ${sum}${syncNote}
+      <a href="${url}" download="print_memory_scan_${escapeHtml(sessionId)}.csv"><button>Download your data (CSV)</button></a>
+    </div>`;
+}
+
+/* ---- main ---------------------------------------------------------------------------- */
+async function main() {
+  if (!CONFIG.sheetWebAppUrl) updateProgress('sheet logging OFF (CSV download only)');
+
+  const agreed = await getConsent();
+  if (!agreed) { updateProgress(''); render(declinedHTML()); return; }
+  sessionId = await getSessionId();
+  // Counterbalance which key means "old" across participants so key bias cannot masquerade as criterion.
+  keyMap = Math.random() < 0.5 ? { old: 'z', new: 'm' } : { old: 'm', new: 'z' };
+  assignTreatments();
+  const ready = preloadImages();
+
+  render(instructionsHTML());
+  await waitForAnyKey();
+  await ready;
+
+  await runBlock(buildPracticeTrials(), { phase: 'practice', blockNum: 1 }, 'practice');
+  const prac = allData.filter((r) => r.phase === 'practice');
+  const acc = prac.length ? Math.round(100 * prac.filter((r) => r.correct === 1).length / prac.length) : 0;
+  render(endOfPracticeHTML(acc));
+  await waitForAnyKey();
+
+  for (let b = 1; b <= CONFIG.experimentalBlocks; b++) {
+    await runBlock(buildBlockTrials(CONFIG.trialsPerCellPerBlock), { phase: 'experimental', blockNum: b }, `block ${b}/${CONFIG.experimentalBlocks}`);
+    if (b < CONFIG.experimentalBlocks) {
+      render(breakHTML(b, CONFIG.experimentalBlocks, allData.filter((r) => r.phase === 'experimental' && r.block_num === b)));
+      await waitForAnyKey();
+    }
+  }
+
+  updateProgress('');
+  sendToSheet(summaryRow());
+  render(experimentCompleteHTML());
+  await waitForAnyKey();
+  render(endOfExperimentHTML());
+}
+
+main();
+</script>
+</body>
+</html>
