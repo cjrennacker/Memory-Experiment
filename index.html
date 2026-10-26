@@ -113,7 +113,7 @@ const CONFIG = {
   // ---- data logging ----
   // Paste your own Apps Script Web App URL here (ends in /exec). See SHEETS_SETUP.md.
   // Leave blank to skip live logging and rely on the CSV download at the end.
-  sheetWebAppUrl: 'https://script.google.com/macros/s/AKfycby0TsmNQkBbMiSWXHyMPQW81uczHLCTMVGKcC27QxUR7t2zDUC0nHlqOwGht5zIervJJA/exec',
+  sheetWebAppUrl: 'https://script.google.com/macros/s/AKfycbwOB3FUXEwA4XdCiD9IyNDJ7h_RduinN77GNZqpiC-RVHqZ7wJrg3OZSHluZrAxz2eQ/exec',
 
   showParticipantSummary: true,  // show d' and speed on the final screen
 
@@ -136,7 +136,7 @@ const CONFIG = {
 (function applyUrlOverrides() {
   const q = new URLSearchParams(location.search);
   if (q.get('T')) CONFIG.studyMsPerItem = Math.max(50, parseInt(q.get('T'), 10) || CONFIG.studyMsPerItem);
-  if (q.get('sheet')) CONFIG.sheetWebAppUrl = q.get('https://script.google.com/macros/s/AKfycbwOB3FUXEwA4XdCiD9IyNDJ7h_RduinN77GNZqpiC-RVHqZ7wJrg3OZSHluZrAxz2eQ/exec');
+  if (q.get('sheet')) CONFIG.sheetWebAppUrl = q.get('sheet');
   if (q.get('quick') === '1') {
     CONFIG.practiceTrials = 4;
     CONFIG.experimentalBlocks = 2;
